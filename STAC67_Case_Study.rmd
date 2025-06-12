@@ -1,0 +1,346 @@
+---
+title: "Untitled"
+author: "Ailing Liu,Yilei Chen, Jiayi Zhu"
+date: "2024-11-26"
+output: pdf_document
+---
+
+```{r}
+full_data <- read.csv("C:/Users/Liu Ailing/Desktop/new_file(1)1.csv", header = TRUE)
+
+full_data$car_name <- gsub(" .*", "", full_data$car_name)
+categorical_vars <- c("car_name", "year", "A.C", "emission_class", "seats_amount", "color", 
+                      "type_of_drive", "doors", "fuel", "car_type", "gearbox")
+full_data[categorical_vars] <- lapply(full_data[categorical_vars], as.factor)
+full_data$horsepower <- as.numeric(sub(" HP.*", "", full_data$horsepower))
+
+```
+
+```{r}
+
+# Proportion of data to sample
+prop <- 0.8
+
+# Number of samples to select
+n <- ceiling(prop * nrow(full_data))
+
+# Randomly sample
+set.seed(805)
+sample_indices <- sample(1:nrow(full_data), size = n, replace = FALSE)
+data <- full_data[sample_indices, ]
+data_test <- full_data[-sample_indices, ]
+```
+
+```{r}
+#data cleaning and variable selection 
+library(ggplot2)
+p1=ggplot(data, aes(x =1 , y =favorite)) +
+  geom_violin(fill = "mistyrose", trim = FALSE, alpha = 0.8) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9) +  
+  theme_minimal()
+p2=ggplot(data, aes(x = 1, y = views)) + 
+  geom_violin(fill = "mistyrose", alpha = 0.8, trim = FALSE) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9)+
+  theme_minimal()
+
+p3=ggplot(data, aes(x = 1, y = horsepower)) + 
+  geom_violin(fill = "mistyrose", alpha = 0.8, trim = FALSE) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9)+
+  theme_minimal()
+
+p4=ggplot(data, aes(x = 1, y = car_mileage..km)) + 
+  geom_violin(fill = "mistyrose", alpha = 0.8, trim = FALSE) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9)+
+  theme_minimal()
+
+p5=ggplot(data, aes(x = 1, y = engine_capacity..cc)) + 
+  geom_violin(fill = "mistyrose", alpha = 0.8, trim = FALSE) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9)+
+  theme_minimal()
+
+library(gridExtra)
+
+grid.arrange(p1, p2,p3, p4, p5, ncol = 3)
+
+
+ggplot(data, aes(x = factor(post_info), y = price)) + 
+  geom_violin(fill = "mistyrose", alpha = 0.8, trim = FALSE) + 
+  geom_boxplot(width = 0.2, fill = "lightskyblue1", alpha = 0.9)+
+  theme_minimal()
+
+```
+
+
+
+```{r}
+#VIF
+library(corrplot)
+cor_matrix <- cbind(data$horsepower, data$car_mileage..km, data$engine_capacity..cc)
+cor_matrix_clean <- cor(cor_matrix, use = "pairwise.complete.obs")
+colnames(cor_matrix_clean) <- c("horsepower","car_mileage..km","engine_capacity..cc")
+rownames(cor_matrix_clean) <- c("horsepower","car_mileage..km","engine_capacity..cc")
+corrplot(cor_matrix_clean, method = "color", type = "upper",addCoef.col = "black",
+         col = colorRampPalette(c("red", "white", "blue"))(200),
+         tl.col = "black", tl.srt = 45, number.cex = 0.8)
+
+```
+
+```{r}
+## Build model of main effects without interaction
+fit1 <- lm(price ~ car_name + year + A.C + emission_class + seats_amount + horsepower + color + 
+             car_mileage..km + engine_capacity..cc + type_of_drive + doors + fuel
+           + car_type + gearbox, data = data)
+summary(fit1)$adj.r.squared
+
+```
+
+```{r}
+#find the significant interaction terms
+fit1_1=lm(price~(car_mileage..km + engine_capacity..cc + horsepower)*car_name+
+           (car_mileage..km + engine_capacity..cc + horsepower)*year
+         +(car_mileage..km + engine_capacity..cc + horsepower)*A.C+(car_mileage..km + engine_capacity..cc + horsepower)*emission_class
+         +(car_mileage..km + engine_capacity..cc + horsepower)*seats_amount+(car_mileage..km + engine_capacity..cc + horsepower)*color+(car_mileage..km + engine_capacity..cc + horsepower)*type_of_drive+(car_mileage..km + engine_capacity..cc + horsepower)*doors
+         +(car_mileage..km + engine_capacity..cc + horsepower)*fuel+(car_mileage..km + engine_capacity..cc + horsepower)*car_type+(car_mileage..km + engine_capacity..cc + horsepower)*gearbox,data = data)
+
+# Remove rows with missing values
+data_no_na <- na.omit(data)
+
+# Fit a null model (intercept only)
+null_model <- lm(price ~ 1, data = data_no_na)
+
+# Perform stepwise selection
+stepwise_model <- step(null_model, scope = list(lower = null_model, upper = fit11), 
+                       direction = "both")
+```
+
+
+
+```{r}
+## Build model of main effects with interaction
+fit2 <- lm(price ~ car_name + year + A.C + emission_class + seats_amount + 
+             horsepower + color + car_mileage..km + engine_capacity..cc + 
+             type_of_drive + doors + fuel + car_type + gearbox + year:horsepower
+           + horsepower:seats_amount + car_name:engine_capacity..cc, data = data)
+
+anova(fit1, fit2)
+```
+
+All numerical variables are "car_mileage..km", "engine_capacity..cc", "horsepower". 
+All categorical variables are "car_name", "year", "A.C", "seats_amount", "emission_class", "color", "type_of_drive", "doors", "fuel", "car_type", "gearbox".
+
+```{r}
+#LINE assumption
+
+resid=fit2$residuals
+fit.Y=predict(fit2)
+
+par(mfrow=c(2,2))
+plot(fit.Y,resid,pch=20,cex=1.5,xlab="Fitted value",ylab="Residuals");abline(0,0)
+qqnorm(resid); qqline(resid)
+hist(resid)
+
+```
+It seems is violated normality and equal variance assumption. We perform model transformation.
+
+```{r}
+#model transformation
+#install.packages("MASS")
+library(MASS)
+result=boxcox(fit2)
+mylambda= result$x[which.max(result$y)]
+mylambda
+
+data$price_1=(data$price)^0.5
+data_test$price_1=(data_test$price)^0.5
+```
+
+
+```{r}
+fit4 <- lm(price_1 ~ car_name + year + A.C + emission_class + seats_amount + 
+             horsepower + color + car_mileage..km + engine_capacity..cc + 
+             type_of_drive + doors + fuel + car_type + gearbox + year:horsepower
+           + horsepower:seats_amount + car_name:engine_capacity..cc, data = data)
+
+summary(fit4)$adj.r.squared
+
+```
+
+```{r}
+#LINE assumption
+resid1=fit4$residuals
+fit.Y1=predict(fit4)
+
+par(mfrow=c(2,2))
+plot(fit.Y1,resid1,pch=20,cex=1.5,xlab="Fitted value",ylab="Residuals");abline(0,0)
+qqnorm(resid1); qqline(resid1)
+hist(resid1)
+hist(residuals(fit4), breaks = 50, freq = FALSE, main = "Residuals Histogram")
+lines(density(residuals(fit4)), col = "red")
+
+
+```
+
+
+```{r}
+#model selection
+# Remove rows with missing values
+data_no_na <- na.omit(data)
+
+# Fit a null model (intercept only)
+null_model <- lm(price_1 ~ 1, data = data_no_na)
+
+# Perform stepwise selection
+stepwise_model <- step(null_model, scope = list(lower = null_model, upper = fit4), 
+                       direction = "both")
+```
+
+```{r}
+fit5 <- lm(price_1 ~ year + horsepower + car_name + car_type + emission_class + 
+             type_of_drive + engine_capacity..cc + seats_amount + car_mileage..km + 
+             A.C + fuel + gearbox + doors + year:horsepower + car_name:engine_capacity..cc + 
+             horsepower:seats_amount, data = data)
+summary(fit5)$adj.r.squared
+
+```
+
+```{r}
+#build up the model selection criterions table
+anova(fit5,fit4)
+SSE=756309
+SSEr=759258
+
+#full model
+p1=length(coef(fit4))
+R2f=summary(fit4)$r.squared
+R2pf_adj=1-(1-R2f)*((n-1)/(n-p1-1))
+MSE=SSE/(5850)
+Cpf=(SSE)/(MSE)+2*(p1+1)-n
+AICf=n*log(SSE)-n*log(n)+2*(p1+1)
+BICf=n*log(SSE)-n*log(n)+log(n)*(p1+1)
+
+#reduced model
+p2=length(coef(fit5))
+R2r=summary(fit5)$r.squared
+R2pr_adj=1-(1-R2r)*((n-1)/(n-p2-1))
+MSEr=SSEr/(5868)
+Cpr=(SSEr)/(MSEr)+2*(p2+1)-n
+AICr=n*log(SSEr)-n*log(n)+2*(p2+1)
+BICr=n*log(SSEr)-n*log(n)+log(n)*(p2+1)
+
+data.frame(c("R^2_p","R^2_p,adj","Cp","AIC","BIC"),
+           step1=round(c(R2f,R2pf_adj,Cpf,AICf,BICf),3),
+           step2=round(c(R2r,R2pr_adj,Cpr,AICr,BICr),3))
+```
+
+
+```{r}
+#check the higher outliers, leverages, and strong influential points
+library(ggplot2)
+library(olsrr)
+library(ggpubr)
+pp1=length(coef(fit5))
+n=dim(data)[1]
+ggarrange(ols_plot_resid_lev(fit4,threshold = qt(1 - alpha / (2 * n), n - pp1 -1)),
+ols_plot_cooksd_chart(fit5),nrow=2)
+
+```
+
+
+
+```{r}
+#find the higher outliers, leverages, and strong influential points
+
+## Studentized deleted residuals t_i
+n=dim(data)[1]
+pp1=length(coef(fit5))
+t1_i <- rstudent(fit5)
+alpha <- 0.05
+
+potential_outliers1 <- which(abs(t1_i) > qt(1 - alpha / (2 * n), n - pp1 -1))
+
+
+## Diagnostic for outlying X observation
+# Calculate leverage (hat values)
+leverage1 <- hatvalues(fit5)
+
+# Identify high leverage points by 0.5
+high_leverage_threshold <- 0.5
+high_leverage_points1 <- which(leverage1 > high_leverage_threshold)
+
+
+### influential observation
+
+
+## Compute Cook's Distance for the model
+cooks_distances1 <- cooks.distance(fit5)
+
+# Calculate threshold
+cooks_threshold <- 4 / n
+
+# Identify influential points
+influential_points_cooks1 <- which(cooks_distances1 >cooks_threshold )
+
+
+
+```
+
+
+```{r}
+#deleted the higher outliers, leverages, and strong influential points 
+data2=data
+
+#delete extreme higher leverage
+delete_ex_leverage1 <- which(leverage1 > 0.5)
+
+
+#delete strong influential point
+
+delete_strong_influ1=which(cooks_distances1 > 0.5)
+
+
+to_delete3=union(union(potential_outliers1,delete_ex_leverage1),delete_strong_influ1)
+
+data2=data2[-to_delete3,]
+```
+
+```{r}
+#the final model
+fit6 <- lm(price_1 ~ year + horsepower + car_name + car_type + emission_class + 
+             type_of_drive + engine_capacity..cc + seats_amount + car_mileage..km + 
+             A.C + fuel + gearbox + doors + year:horsepower + car_name:engine_capacity..cc + 
+             horsepower:seats_amount, data = data2)
+summary(fit6)$adj.r.squared
+
+
+```
+
+```{r}
+#check the LINE assumption of final model
+resid2=fit6$residuals
+fit.Y2=predict(fit6)
+
+par(mfrow=c(2,2))
+plot(fit.Y2,resid2,pch=20,cex=1.5,xlab="Fitted value",ylab="Residuals");abline(0,0)
+qqnorm(resid2); qqline(resid2)
+hist(residuals(fit6), breaks = 50, freq = FALSE, main = "Residuals Histogram")
+lines(density(residuals(fit6)), col = "red")
+
+```
+
+```{r}
+#model validation
+
+test_predictions <- predict(fit6, newdata = data_test)
+n.star = dim(data_test)[1]
+mspe <- sum((data_test$price_1 - test_predictions)^2)/n.star
+mspe
+predictions <- predict(fit6, newdata = data2)
+n1=dim(data2)[1]
+mse <- sum((data2$price_1 - predictions)^2)/n1
+mse
+```
+
+
+
+
+
