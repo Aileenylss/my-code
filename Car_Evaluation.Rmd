@@ -1,0 +1,73 @@
+---
+title: "Untitled"
+author: "Ailing Liu 1008835067"
+date: "2025-02-19"
+output: html_document
+---
+
+```{r}
+data <- read.csv("C:/Users/Liu Ailing/Desktop/car_eval_train.csv",header = T)
+colnames(data)[colnames(data) == "X"] <- "id"
+data_test <- read.csv("C:/Users/Liu Ailing/Desktop/car_eval_test.csv",header = T)
+colnames(data_test)[colnames(data_test) == "X"] <- "id"
+```
+
+
+```{r}
+categorical_vars <- c("id","buying", "maint","doors","persons","lug_boot","safety","class")
+data[categorical_vars] <- lapply(data[categorical_vars],as.factor)
+```
+
+
+#Randome forest
+```{r}
+library(randomForest)
+library(dplyr)
+
+
+categorical_vars <- c("buying", "maint", "doors", "persons", "lug_boot", "safety", "class")
+data[categorical_vars] <- lapply(data[categorical_vars], as.factor)
+
+```
+
+```{r}
+set.seed(42)
+best_mtry <- tuneRF(data[-ncol(data)], data$class, 
+                    stepFactor = 1.5,  # 每次增加 mtry 的步长
+                    improve = 0.01,    # 误差减少多少才继续
+                    ntreeTry = 100,    # 每次尝试 100 棵树
+                    trace = TRUE)      # 打印过程信息
+optimal_mtry <- best_mtry[which.min(best_mtry[, 2]), 1]
+oob_error <- c()
+ntree_values <- seq(50, 1000, by = 50)
+
+for (nt in ntree_values) {
+  fit_tmp <- randomForest(class ~ ., data = data, ntree = nt, mtry = optimal_mtry)
+  oob_error <- c(oob_error, fit_tmp$err.rate[nt, "OOB"])
+}
+
+best_ntree <- ntree_values[which.min(oob_error)]
+```
+
+
+
+```{r}
+
+fit_rf <- randomForest(class ~ .,  
+                       data = data, 
+                       ntree = best_ntree,  
+                       mtry = optimal_mtry,      
+                       importance = TRUE)
+categorical_vars1 <- c("buying", "maint", "doors", "persons", "lug_boot", "safety")
+data_test[categorical_vars1] <- lapply(data_test[categorical_vars1], as.factor)
+
+data_test <- data_test %>% mutate(output=predict(fit_rf, data_test))
+```
+
+
+```{r}
+new_data <- data.frame(output = data_test$output)
+new_data <- cbind(id = 0:(nrow(new_data) - 1), new_data)
+write.csv(new_data,"submission.csv",row.names = F)
+```
+
