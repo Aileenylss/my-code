@@ -1,0 +1,2242 @@
+---
+title: "project final report Appendix"
+author: "Ailing Liu"
+date: "2025-10-25"
+output: pdf_document
+---
+
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(knitr)
+library(purrr)
+library(ggplot2)
+library(corrplot)
+library(forecast)
+library(astsa)
+library(vars)
+library(dplyr)
+library(conflicted)
+
+
+
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::filter)
+
+
+df2 <- read.csv("C:/Users/20871/Desktop/utsc/fourth year/stad57/project/Project_Group3/2023 monthly data.csv")
+
+#variable selecting and data cleaning
+df1 <- df2 %>% filter(Country %in% c("Canada","United States"), 
+                      BALANCE %in% c("COMBFUEL","NUCLEAR","HYDRO"))
+df1 <- df1 %>% select(Country,BALANCE,TIME,Value)
+```
+# 1. Introduction
+
+# 2. Dataset
+```{r,eval=FALSE}
+#statistic summary(we calculate population standard deviation)
+df3 <- df1 %>% group_by(Country,BALANCE) %>% 
+  summarise(Mean = mean(Value, na.rm = TRUE),
+            SD=sqrt(mean((Value - mean(Value))^2)),
+            Min = min(Value),
+            Max = max(Value))
+
+kable(df3)
+```
+
+\pagebreak
+
+\begin{center}
+\textbf{Table A1: Statistic Summary of Time Series}
+\end{center}
+```{r,echo=FALSE,message=FALSE}
+#statistic summary(we calculate population standard deviation)
+df3 <- df1 %>% group_by(Country,BALANCE) %>% 
+  summarise(Mean = mean(Value, na.rm = TRUE),
+            SD=sqrt(mean((Value - mean(Value))^2)),
+            Min = min(Value),
+            Max = max(Value))
+
+kable(df3)
+```
+
+
+# 3. Initial Exploration & Data Preprocessing
+
+## 3.1 Time series
+
+```{r}
+#Time series
+make_ts <- function(country,balance) {
+df_balance <- df1 %>% filter(BALANCE == balance, Country==country) %>% 
+  arrange(TIME) %>% drop_na(Value)
+ts(df_balance$Value, start = c(2010, 1), frequency = 12)
+}
+
+ts_can_comb <- make_ts("Canada","COMBFUEL")
+ts_can_nuc <- make_ts("Canada","NUCLEAR")
+ts_can_hyd <- make_ts("Canada","HYDRO")
+ts_usa_comb <- make_ts("United States","COMBFUEL")
+ts_usa_nuc <- make_ts("United States","NUCLEAR")
+ts_usa_hyd <- make_ts("United States","HYDRO")
+
+#Fit linear trend
+Tm_cc = as.vector(time(ts_can_comb))
+out_cc = lm( ts_can_comb ~ Tm_cc )
+
+Tm_cn = as.vector(time(ts_can_nuc))
+out_cn = lm( ts_can_nuc ~ Tm_cn )
+
+Tm_ch = as.vector(time(ts_can_hyd))
+out_ch = lm( ts_can_hyd ~ Tm_ch )
+
+Tm_uc = as.vector(time(ts_usa_comb))
+out_uc = lm( ts_usa_comb ~ Tm_uc )
+
+Tm_un = as.vector(time(ts_usa_nuc))
+out_un = lm( ts_usa_nuc ~ Tm_un )
+
+Tm_uh = as.vector(time(ts_usa_hyd))
+out_uh = lm( ts_usa_hyd ~ Tm_uh )
+
+#plot time series and find the trend
+par(mfrow=c(3,2),mar=c(4,4,2,1),oma=c(0,0,3,0))
+plot(ts_can_comb, ylab="Net Electricity Supply",main = "Canada COMBFUEL")
+lines( Tm_cc, out_cc$fitted, type = "l", col = 2)
+plot(ts_usa_comb, ylab="Net Electricity Supply",main = "USA COMBFUEL")
+lines( Tm_uc, out_uc$fitted, type = "l", col = 2)
+plot(ts_can_nuc, ylab="Net Electricity Supply",main = "Canada NUCLEAR")
+lines( Tm_cn, out_cn$fitted, type = "l", col = 2)
+plot(ts_usa_nuc, ylab="Net Electricity Supply",main = "USA NUCLEAR")
+lines( Tm_un, out_un$fitted, type = "l", col = 2)
+plot(ts_can_hyd, ylab="Net Electricity Supply",main = "Canada HYDRO")
+lines( Tm_ch, out_ch$fitted, type = "l", col = 2)
+plot(ts_usa_hyd, ylab="Net Electricity Supply",main = "USA HYDRO")
+lines( Tm_uh, out_uh$fitted, type = "l", col = 2)
+mtext("Graph A1: Time Series for Each Country and Balance", side=3, outer=TRUE, line=1.5, cex=1.2)
+```
+
+```{r}
+plot_df <- df1 %>% mutate(time = ym(TIME) ) %>% arrange(Country, time)
+ggplot(plot_df,
+       aes(x = time, y = Value, colour = BALANCE)) +
+  geom_line(linewidth = 0.73) +
+  facet_wrap(~ Country, ncol = 1, scales = "free_y") +
+  labs(title = "Graph A2: Energy mix time series by country",
+       x = "Time", y = "Net electricity supply",
+       colour = "Energy source") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")+
+  theme_minimal()
+```
+```{r}
+ggplot(plot_df,
+       aes(x = time, y = Value, fill = BALANCE)) +
+  geom_area(position = "stack",alpha = 0.73) +
+  facet_wrap(~ Country, ncol = 1, scales = "free_y") +
+  labs(title = "Graph A3: Stacked electricity supply by energy source in Canada and the U.S.",
+       x = "Time", y = "Net electricity supply",
+       fill = "Energy source") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+```
+## 3.2 Trends and Seasonal Patterns in Net Electricity Supply by Energy Source
+```{r}
+#Decomposition (check trend and seasonality)
+
+dcmp_cc=decompose(ts_can_comb)
+dcmp_cn=decompose(ts_can_nuc)
+dcmp_ch=decompose(ts_can_hyd)
+dcmp_uc=decompose(ts_usa_comb)
+dcmp_un=decompose(ts_usa_nuc)
+dcmp_uh=decompose(ts_usa_hyd)
+
+Can_Comb_trend = dcmp_cc$trend
+USA_Comb_trend = dcmp_uc$trend
+Can_NUC_trend = dcmp_cn$trend
+USA_NUC_trend = dcmp_un$trend
+Can_HYD_trend = dcmp_ch$trend
+USA_HYD_trend = dcmp_uh$trend
+
+Can_Comb_seasonal = dcmp_cc$seasonal
+USA_Comb_seasonal = dcmp_uc$seasonal
+Can_NUC_seasonal = dcmp_cn$seasonal
+USA_NUC_seasonal = dcmp_un$seasonal
+Can_HYD_seasonal = dcmp_ch$seasonal
+USA_HYD_seasonal = dcmp_uh$seasonal
+
+
+```
+
+```{r}
+library(zoo)   
+ts_to_df <- function(ts_obj, comp_vec, country, balance, component){
+  tibble(
+    time_num = time(ts_obj),              
+    value    = as.numeric(comp_vec),      
+    Country  = country,
+    BALANCE  = balance,
+    component = component
+  ) %>%
+    drop_na(value) %>%                    
+    mutate(time = as.Date(as.yearmon(time_num)))
+}
+
+trend_df <- bind_rows(
+  ts_to_df(ts_can_comb, Can_Comb_trend, "Canada", "COMBFUEL", "Trend"),
+  ts_to_df(ts_can_nuc,  Can_NUC_trend,  "Canada", "NUCLEAR", "Trend"),
+  ts_to_df(ts_can_hyd,  Can_HYD_trend,  "Canada", "HYDRO", "Trend"),
+  ts_to_df(ts_usa_comb, USA_Comb_trend, "United States", "COMBFUEL", "Trend"),
+  ts_to_df(ts_usa_nuc,  USA_NUC_trend,  "United States", "NUCLEAR",  "Trend"),
+  ts_to_df(ts_usa_hyd,  USA_HYD_trend,  "United States", "HYDRO", "Trend")
+)
+
+season_df <- bind_rows(
+  ts_to_df(ts_can_comb, Can_Comb_seasonal, "Canada", "COMBFUEL", "Seasonal"),
+  ts_to_df(ts_can_nuc,  Can_NUC_seasonal,  "Canada", "NUCLEAR", "Seasonal"),
+  ts_to_df(ts_can_hyd,  Can_HYD_seasonal,  "Canada", "HYDRO", "Seasonal"),
+  ts_to_df(ts_usa_comb, USA_Comb_seasonal, "United States", "COMBFUEL", "Seasonal"),
+  ts_to_df(ts_usa_nuc,  USA_NUC_seasonal,  "United States", "NUCLEAR", "Seasonal"),
+  ts_to_df(ts_usa_hyd,  USA_HYD_seasonal,  "United States", "HYDRO", "Seasonal")
+)
+
+
+
+ggplot(trend_df,
+       aes(x = time, y = value, colour = BALANCE)) +
+  geom_line(linewidth = 0.73) +
+  facet_wrap(~ Country, ncol = 1, scales = "free_y") +
+  labs(title  = "Graph A4: Long-term changes in the energy mix over time 
+       (trend components)",
+       x      = "Time",
+       y      = "Trend in net electricity supply",
+       colour = "Energy source") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  theme_minimal()
+
+
+
+ggplot(season_df,
+       aes(x = time, y = value, colour = BALANCE)) +
+  geom_line(linewidth = 0.73) +
+  facet_wrap(~ Country, ncol = 1, scales = "free_y") +
+  labs(title  = "Graph A5: Seasonal variation in the energy mix over time 
+       (seasonal components)",
+       x      = "Time",
+       y      = "Seasonal component",
+       colour = "Energy source") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  theme_minimal()
+
+```
+
+*Note: In Graph A6 & A7, y-axis scale differs across panels*
+```{r,out.width="60%",fig.align='center'}
+combfuel = Can_Comb_seasonal; nuclear = Can_NUC_seasonal; hydro = Can_HYD_seasonal
+plot(cbind(combfuel,nuclear,hydro),main="Graph A6: Seasonal component of Canada energy sources",
+     cex.axis = 0.8,   
+     cex.lab = 0.8)
+combfuel = USA_Comb_seasonal; nuclear = USA_NUC_seasonal; hydro = USA_HYD_seasonal
+plot(cbind(combfuel,nuclear,hydro),main="Graph A7: Seasonal component of United States energy sources ",
+     cex.axis = 0.8,   
+     cex.lab = 0.8)
+
+```
+
+
+
+## 3.3 Transformations and Differencing
+```{r,eval=FALSE}
+# prove variance is constant
+plot(cbind(ts_can_nuc,diff(ts_can_nuc)),main = "")
+```
+
+\begin{center}
+\textbf{Graph A8: Original and differenced nuclear supply series (Canada)}
+\end{center}
+```{r,echo=FALSE,out.width="60%",fig.align='center'}
+# prove variance is constant
+plot(cbind(ts_can_nuc,diff(ts_can_nuc)),main = "")
+
+```
+```{r,eval=F}
+plot(cbind(ts_can_nuc,log(ts_can_nuc)),main = "")
+```
+
+\pagebreak
+
+\begin{center}
+\textbf{Graph A9: Original and transformed nuclear supply series (Canada)}
+\end{center}
+```{r,echo=F,out.width="60%",fig.align='center'}
+plot(cbind(ts_can_nuc,log(ts_can_nuc)),main = "")
+```
+
+### 3.3.1 unit roots test
+```{r}
+
+library(tseries)
+adf.test(ts_can_comb)
+adf.test(ts_usa_comb)
+adf.test(ts_can_nuc)
+adf.test(ts_usa_nuc)
+adf.test(ts_can_hyd)
+adf.test(ts_usa_hyd)
+```
+### 3.3.2 Canada~Nuclear Unit Root Test After Differencing
+```{r}
+adf.test(diff(ts_can_nuc))
+```
+
+## 3.4 Autocorrelation, Partial Autocorrelation, and Cross-correlation
+
+### 3.4.1 ACF plot and underlying seasonality 
+```{r}
+#ACF
+par(mfrow=c(3,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+acf(as.numeric(ts_can_comb),lag.max = 80,main="Canada COMBFUEL",ylim = c(-0.5, 1))
+acf(as.numeric(ts_usa_comb),lag.max = 80,main="USA COMBFUEL",ylim = c(-0.5, 1))
+acf(as.numeric(ts_can_nuc),lag.max = 80,main="Canada NUCLEAR",ylim = c(-0.5, 1))
+acf(as.numeric(ts_usa_nuc),lag.max = 80,main="USA NUCLEAR",ylim = c(-0.5, 1))
+acf(as.numeric(ts_can_hyd),lag.max = 80,main="Canada HYDRO",ylim = c(-0.5, 1))
+acf(as.numeric(ts_usa_hyd),lag.max = 80,main="USA HYDRO",ylim = c(-0.5, 1))
+mtext("Graph A10: ACF for Each Country and Energy Sources", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2) 
+mtext("ACF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)  
+```
+
+### 3.4.2 PACF plot 
+```{r}
+#pacf
+par(mfrow=c(3,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+pacf(as.numeric(ts_can_comb),lag.max = 40,main="Canada COMBFUEL",ylim = c(-0.5, 1))
+pacf(as.numeric(ts_usa_comb),lag.max = 40,main="USA COMBFUEL",ylim = c(-0.5, 1))
+pacf(as.numeric(ts_can_nuc),lag.max = 40,main="Canada NUCLEAR",ylim = c(-0.5, 1))
+pacf(as.numeric(ts_usa_nuc),lag.max = 40,main="USA NUCLEAR",ylim = c(-0.5, 1))
+pacf(as.numeric(ts_can_hyd),lag.max = 40,main="Canada HYDRO",ylim = c(-0.5, 1))
+pacf(as.numeric(ts_usa_hyd),lag.max = 40,main="USA HYDRO",ylim = c(-0.5, 1))
+mtext("Graph A11: PACF for Each Country and Energy Sources", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2)
+mtext("PACF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)
+```
+
+### 3.4.3 cross correlation
+
+```{r}
+par(mfrow=c(3,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+ccf(as.numeric(ts_can_comb),as.numeric(ts_can_nuc),lag.max = 24, main = "Can Comb & Nuc")
+ccf(as.numeric(ts_usa_comb),as.numeric(ts_usa_nuc),lag.max = 24, main = "USA Comb & Nuc")
+ccf(as.numeric(ts_can_comb),as.numeric(ts_can_hyd),lag.max = 24, main = "Can Comb & Hdy")
+ccf(as.numeric(ts_usa_comb),as.numeric(ts_usa_hyd),lag.max = 24, main = "USA Comb & Hdy")
+ccf(as.numeric(ts_can_nuc),as.numeric(ts_can_hyd),lag.max = 24, main = "Can Nuc & Hdy")
+ccf(as.numeric(ts_usa_nuc),as.numeric(ts_usa_hyd),lag.max = 24, main = "USA Nuc & Hdy")
+mtext("Graph A12: CCF for Energy Sources in Same Country", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2)
+mtext("CCF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)
+```
+```{r}
+par(mfrow=c(2,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+ccf(as.numeric(ts_can_comb),as.numeric(ts_usa_comb),lag.max = 40,main="Comb Can & USA")
+ccf(as.numeric(ts_can_nuc),as.numeric(ts_usa_nuc),lag.max = 40,main="Nuc Can & USA")
+ccf(as.numeric(ts_can_hyd),as.numeric(ts_usa_hyd),lag.max = 40,main="Hdy Can & USA")
+mtext("Graph A13: CCF for Country in Same Energy Source", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2)
+mtext("CCF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)
+```
+
+### 3.4.4 cross correlation with seasonal differencing
+```{r}
+# seasonal differencing
+sd_can_c = seasadj(stl(ts_can_comb, s.window="periodic"))
+sd_can_n = seasadj(stl(ts_can_nuc, s.window="periodic"))
+sd_can_h = seasadj(stl(ts_can_hyd, s.window="periodic"))
+sd_usa_c = seasadj(stl(ts_usa_comb, s.window="periodic"))
+sd_usa_n = seasadj(stl(ts_usa_nuc, s.window="periodic"))
+sd_usa_h = seasadj(stl(ts_usa_hyd, s.window="periodic"))
+
+par(mfrow=c(3,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+ccf(as.numeric(sd_can_c),as.numeric(sd_can_n),lag.max = 24, main = "Can Comb & Nuc")
+ccf(as.numeric(sd_usa_c),as.numeric(sd_usa_n),lag.max = 24, main = "USA Comb & Nuc")
+ccf(as.numeric(sd_can_c),as.numeric(sd_can_h),lag.max = 24, main = "Can Comb & Hdy")
+ccf(as.numeric(sd_usa_c),as.numeric(sd_usa_h),lag.max = 24, main = "USA Comb & Hdy")
+ccf(as.numeric(sd_can_n),as.numeric(sd_usa_h),lag.max = 24, main = "Can Nuc & Hdy")
+ccf(as.numeric(sd_usa_n),as.numeric(sd_usa_h),lag.max = 24, main = "USA Nuc & Hdy")
+mtext("Graph A14: Seasonal Differencing CCF for Energy Sources in Same Country", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2)
+mtext("CCF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)
+
+```
+```{r}
+par(mfrow=c(2,2),mar=c(2,2,3,1),oma=c(2,2,2,0))
+ccf(as.numeric(sd_can_c),as.numeric(sd_usa_c),lag.max = 40,main="Comb Can & USA")
+ccf(as.numeric(sd_can_n),as.numeric(sd_usa_n),lag.max = 40,main="Nuc Can & USA")
+ccf(as.numeric(sd_can_h),as.numeric(sd_usa_h),lag.max = 40,main="Hdy Can & USA")
+mtext("Graph A15: Seasonal Differencing CCF for Country in Same Energy Source", side=3, outer=TRUE, line=0.9, cex=1)
+mtext("Lag", side = 1, outer = TRUE, line = 0.9, cex = 1, font = 2)
+mtext("CCF", side = 2, outer = TRUE, line = 0.9, cex = 1, font = 2)
+```
+
+
+# 4 Modeling
+
+## 4.1 Implementation & Model Evaluation
+### 4.1.1 Univariate SARIMA Models
+### Parameter Tuning 
+#### SARIMA(stepwise AIC model selection)
+```{r}
+
+ts_list <- list(
+  "Can COMB" = ts_can_comb,
+  "USA COMB" = ts_usa_comb,
+  "Can NUC"  = ts_can_nuc,
+  "USA NUC"  = ts_usa_nuc,
+  "Can HYD"  = ts_can_hyd,
+  "USA HYD"  = ts_usa_hyd
+)
+fit_one <- function(x){
+  auto.arima(head(x,-12), # use training set
+             seasonal = TRUE, D = 1, ic = "aic",
+             stepwise = TRUE, approximation = FALSE,
+             allowmean = TRUE, allowdrift = TRUE)
+}
+
+fits <- map(ts_list, fit_one)
+
+
+
+```
+
+Use stepwise AIC criteria to determine parameters estimation and model order:
+```{r,eval=FALSE}
+summ_tbl <- imap(fits, function(m, nm){
+  ord <- arimaorder(m)  # c(p,d,q,P,D,Q,s)
+
+  order_chr    <- sprintf("(%d,%d,%d)",       ord[1], ord[2], ord[3])
+  seasonal_chr <- sprintf("(%d,%d,%d)[%d]",   ord[4], ord[5], ord[6], ord[7])
+
+  n_train <- length(m$x)                      
+  aic_val <- AIC(m)
+
+
+  tibble(
+    Series = nm,
+    Order = order_chr,
+    Seasonal = seasonal_chr,
+    AIC = round(aic_val, 2),
+  )
+})
+
+model_table <- bind_rows(summ_tbl)
+
+kable(
+  model_table
+)
+
+```
+
+\begin{center}
+\textbf{Table A2: Stepwise AIC Selected SARIMA Model Orders}
+\end{center}
+```{r,echo=FALSE}
+
+summ_tbl <- imap(fits, function(m, nm){
+  ord <- arimaorder(m)  # c(p,d,q,P,D,Q,s)
+
+  order_chr    <- sprintf("(%d,%d,%d)",       ord[1], ord[2], ord[3])
+  seasonal_chr <- sprintf("(%d,%d,%d)[%d]",   ord[4], ord[5], ord[6], ord[7])
+
+  n_train <- length(m$x)                      
+  aic_val <- AIC(m)
+
+
+  tibble(
+    Series = nm,
+    Order = order_chr,
+    Seasonal = seasonal_chr,
+    AIC = round(aic_val, 2),
+  )
+})
+
+model_table <- bind_rows(summ_tbl)
+
+kable(
+  model_table
+)
+
+```
+
+
+### 4.1.2 SARIMA Diagnostics
+```{r,eval=FALSE}
+library(astsa)
+sarima(head(ts_can_comb,-12),1,0,1,0,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_comb,-12),1,0,0,2,1,0,S = 12)
+mtext("SARIMA Diagnostics for United States COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_can_nuc,-12),0,1,2,0,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada NUCLEAR",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_nuc,-12),2,0,1,0,1,2,S = 12)
+mtext("SARIMA Diagnostics for United States NUCLEAR",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_can_hyd,-12),3,0,0,2,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_hyd,-12),1,0,0,2,1,0,S = 12)
+mtext("SARIMA Diagnostics for United States HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+
+```
+
+\begin{center}
+\textbf{Graph A16: SARIMA Diagnostics plot of model given by stepwise AIC}
+\end{center}
+```{r,echo=FALSE,out.width="80%",fig.align='center'}
+library(astsa)
+sarima(head(ts_can_comb,-12),1,0,1,0,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_comb,-12),1,0,0,2,1,0,S = 12)
+mtext("SARIMA Diagnostics for United States COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_can_nuc,-12),0,1,2,0,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada NUCLEAR",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_nuc,-12),2,0,1,0,1,2,S = 12)
+mtext("SARIMA Diagnostics for United States NUCLEAR",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_can_hyd,-12),3,0,0,2,1,1,S = 12)
+mtext("SARIMA Diagnostics for Canada HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_hyd,-12),1,0,0,2,1,0,S = 12)
+mtext("SARIMA Diagnostics for United States HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+
+```
+
+### 4.1.3 SARIMA Model improvement
+```{r,eval=FALSE}
+# After modifying order which are base on diagnostics 
+
+sarima(head(ts_usa_comb,-12),1,0,0,2,1,1,S = 12) #add sma terms
+mtext("Improved SARIMA Diagnostics for United States COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_hyd,-12),1,0,0,2,1,1,S = 12) #add sma terms
+mtext("Improved SARIMA Diagnostics for United States HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+```
+
+\begin{center}
+\textbf{Graph A17: Diagnostics plot of model after improvement}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+# After modifying order which are base on diagnostics 
+
+sarima(head(ts_usa_comb,-12),1,0,0,2,1,1,S = 12) #add sma terms
+mtext("Improved SARIMA Diagnostics for United States COMBFUEL",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+sarima(head(ts_usa_hyd,-12),1,0,0,2,1,1,S = 12) #add sma terms
+mtext("Improved SARIMA Diagnostics for United States HYDRO",
+      side = 3, line = 3.4, cex = 0.8, font = 2)
+```
+
+```{r}
+fit_cc = Arima(head(ts_can_comb,-12),order = c(1,0,1), seasonal = list(order = c(0,1,1),
+               period = 12),include.drift = T)
+fit_uc = Arima(head(ts_usa_comb,-12),order = c(1,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+fit_cn = Arima(head(ts_can_nuc,-12),order = c(0,1,2), seasonal = list(order = c(0,1,1),
+               period = 12),include.drift = T)
+fit_un = Arima(head(ts_usa_nuc,-12),order = c(2,0,1), seasonal = list(order = c(0,1,2),
+               period = 12),include.drift = T)
+fit_ch = Arima(head(ts_can_hyd,-12),order = c(3,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+fit_uh = Arima(head(ts_usa_hyd,-12),order = c(1,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+```
+
+### 4.1.4 Multivariate VAR Models
+
+### Parameter Tuning
+
+### VAR model with all series
+```{r}
+Y = cbind(C_Comb = ts_can_comb,
+          C_Nuc  = ts_can_nuc,
+          C_Hyd  = ts_can_hyd,
+          U_Comb = ts_usa_comb,
+          U_Nuc  = ts_usa_nuc,
+          U_Hyd  = ts_usa_hyd)
+VARselect(Y, lag.max = 5, type = "both",season = 12)
+VAR(Y, type = "both", ic = "AIC", lag.max =5, season = 12)
+```
+
+AIC is big, we choose 2 different way to consider multivariate relationship
+
+### Within-country VAR (three-variable VAR models for each country)
+We adopt a three-variable VAR model within each country because the CCF results 
+indicate strong contemporaneous interdependence among COMBFUEL, HYDRO, and NUCLEAR 
+supplies. Modeling them jointly improves forecast performance and allows us to 
+quantify how changes in one source help predict the others.
+
+so in this case, we use traning set to fit model
+```{r}
+library(vars)
+Y_can = cbind(Comb = ts_can_comb,
+              Nuc  = ts_can_nuc,
+              Hyd  = ts_can_hyd)
+
+Y_usa = cbind(Comb = ts_usa_comb,
+              Nuc  = ts_usa_nuc,
+              Hyd  = ts_usa_hyd)
+
+Y_can_train <- cbind(Comb = head(ts_can_comb,-12),
+               Nuc  = head(ts_can_nuc,-12),
+               Hyd  = head(ts_can_hyd,-12))
+
+Y_usa_train <- cbind(Comb = head(ts_usa_comb,-12),
+               Nuc  = head(ts_usa_nuc,-12),
+               Hyd  = head(ts_usa_hyd,-12))
+
+# Decide order p
+VARselect(Y_can_train, lag.max = 5, type = "both",season = 12)$selection
+(fit_var_can = VAR(Y_can_train, type = "both", ic = "AIC", lag.max = 5,season = 12))
+
+VARselect(Y_usa_train, lag.max = 5, type = "both",season = 12)$selection
+(fit_var_usa = VAR(Y_usa_train, type = "both", ic = "AIC", lag.max = 5,season = 12))
+
+```
+So we choose VAR(3) in Canada, and VAR(1) in United States.
+
+### Cross-country bivariate VAR for the same source
+```{r}
+Y_comb = cbind(Can = ts_can_comb,
+               USA = ts_usa_comb)
+Y_nuc = cbind(Can = ts_can_nuc,
+              USA = ts_usa_nuc)
+Y_hyd = cbind(Can = ts_can_hyd,
+              USA = ts_usa_hyd)
+
+VARselect(Y_comb, lag.max = 5, type = "both",season = 12)$selection
+(fit_var_comb = VAR(Y_comb, type = "both", ic = "AIC", lag.max = 5,season = 12))
+VARselect(Y_nuc, lag.max = 5, type = "both",season = 12)$selection
+(fit_var_nuc = VAR(Y_nuc, type = "both", ic = "AIC", lag.max = 5,season = 12))
+VARselect(Y_hyd, lag.max = 5, type = "both",season = 12)$selection
+(fit_var_hyd = VAR(Y_hyd, type = "both", ic = "AIC", lag.max = 5,season = 12))
+```
+
+### 4.1.5 Seasonal Differenced VAR model 
+#### Seasonal Differenced Within-country VAR
+```{r}
+Y_can_sd = cbind(Comb = sd_can_c,
+                 Nuc  = sd_can_n,
+                 Hyd  = sd_can_h)
+
+Y_usa_sd = cbind(Comb = sd_usa_c,
+                 Nuc  = sd_usa_n,
+                 Hyd  = sd_usa_h)
+VARselect(Y_can_sd, lag.max = 5, type = "both")$selection
+(fit_var_can_sd = VAR(Y_can_sd, type = "both", ic = "AIC", lag.max = 5))
+
+VARselect(Y_usa_sd, lag.max = 5, type = "both")$selection
+(fit_var_usa_sd = VAR(Y_usa_sd, type = "both", ic = "AIC", lag.max = 5))
+```
+After seasonal differencing, we choose VAR(3) for Canada, and VAR(2) for United States.
+
+#### Seasonal Differenced Cross-country bivariate VAR
+```{r}
+Y_comb_sd = cbind(Can = sd_can_c,
+                  USA = sd_usa_c)
+Y_nuc_sd = cbind(Can = sd_can_n,
+                 USA = sd_usa_n)
+Y_hyd_sd = cbind(Can = sd_can_h,
+                 USA = sd_usa_h)
+
+VARselect(Y_comb_sd, lag.max = 5, type = "both")$selection
+(fit_var_comb_sd = VAR(Y_comb_sd, type = "both", ic = "AIC", lag.max = 5))
+VARselect(Y_nuc_sd, lag.max = 5, type = "both")$selection
+(fit_var_nuc_sd = VAR(Y_nuc_sd, type = "both", ic = "AIC", lag.max = 5))
+VARselect(Y_hyd_sd, lag.max = 5, type = "both")$selection
+(fit_var_hyd_sd = VAR(Y_hyd_sd, type = "both", ic = "AIC", lag.max = 5))
+```
+After seasonal differencing, we choose VAR(2) for Combfuel, Nuclear, and VAR(4) for Hydro.
+
+### 4.1.6 VAR Diagnostics
+### Within-country VAR
+
+```{r,eval=FALSE}
+# get residuals 
+res_can = resid(fit_var_can) %>% ts( start = c(2010, 1), freq = 12)
+res_usa = resid(fit_var_usa) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_can, main = "3-variable VAR model residuals plots in Canada")
+plot(res_usa, main = "3-variable VAR model residuals plots in United States")
+```
+
+\begin{center}
+\textbf{Graph A18: Residuals CCF of 3-variable VAR}
+\end{center}
+```{r,echo=FALSE,out.width="55%"}
+# get residuals 
+res_can = resid(fit_var_can) %>% ts( start = c(2010, 1), freq = 12)
+res_usa = resid(fit_var_usa) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_can, main = "3-variable VAR model residuals plots in Canada")
+plot(res_usa, main = "3-variable VAR model residuals plots in United States")
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# Residual ACF/CCF plots
+acf(res_can)
+```
+
+\begin{center}
+\textbf{Graph A19: Residuals CCF of 3-variable VAR in Canada}
+\end{center}
+```{r,echo=FALSE}
+# Residual ACF/CCF plots
+acf(res_can)
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_usa)
+```
+
+\begin{center}
+\textbf{Graph A20: Residuals CCF of 3-variable VAR in United States}
+\end{center}
+```{r,echo=FALSE}
+acf(res_usa)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# CAN Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_can[,"Comb"]); qqline(res_can[,"Comb"])
+qqnorm(res_can[,"Nuc"]); qqline(res_can[,"Nuc"])
+qqnorm(res_can[,"Hyd"]); qqline(res_can[,"Hyd"])
+
+```
+
+\begin{center}
+\textbf{Graph A21: Q-Q plot for 3-variable VAR model in Canada}
+\end{center}
+```{r,echo=FALSE}
+# CAN Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_can[,"Comb"]); qqline(res_can[,"Comb"])
+qqnorm(res_can[,"Nuc"]); qqline(res_can[,"Nuc"])
+qqnorm(res_can[,"Hyd"]); qqline(res_can[,"Hyd"])
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# USA Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_usa[,"Comb"]); qqline(res_usa[,"Comb"])
+qqnorm(res_usa[,"Nuc"]); qqline(res_usa[,"Nuc"])
+qqnorm(res_usa[,"Hyd"]); qqline(res_usa[,"Hyd"])
+```
+
+\begin{center}
+\textbf{Graph A22: Q-Q plot for 3-variable VAR model in United States}
+\end{center}
+```{r,echo=FALSE}
+# USA Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_usa[,"Comb"]); qqline(res_usa[,"Comb"])
+qqnorm(res_usa[,"Nuc"]); qqline(res_usa[,"Nuc"])
+qqnorm(res_usa[,"Hyd"]); qqline(res_usa[,"Hyd"])
+```
+
+\pagebreak
+
+### Cross-country VAR
+```{r,eval=FALSE}
+# get residuals 
+res_comb = resid(fit_var_comb) %>% ts( start = c(2010, 1), freq = 12)
+res_nuc = resid(fit_var_nuc) %>% ts( start = c(2010, 1), freq = 12)
+res_hyd = resid(fit_var_hyd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_comb, main = "2-variable VAR model residuals plots in Combfuel")
+plot(res_nuc, main = "2-variable VAR model residuals plots in Nuclear")
+plot(res_hyd, main = "2-variable VAR model residuals plots in Hydro")
+```
+
+\begin{center}
+\textbf{Graph A23: 2-variable VAR model residuals plots}
+\end{center}
+```{r,echo=FALSE,out.width="55%"}
+# get residuals 
+res_comb = resid(fit_var_comb) %>% ts( start = c(2010, 1), freq = 12)
+res_nuc = resid(fit_var_nuc) %>% ts( start = c(2010, 1), freq = 12)
+res_hyd = resid(fit_var_hyd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_comb, main = "2-variable VAR model residuals plots in Combfuel")
+plot(res_nuc, main = "2-variable VAR model residuals plots in Nuclear")
+plot(res_hyd, main = "2-variable VAR model residuals plots in Hydro")
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# Residual ACF/CCF plots
+acf(res_comb)
+```
+
+\begin{center}
+\textbf{Graph A24: Residuals CCF for 2-variable VAR model in Combfuel}
+\end{center}
+```{r,echo=FALSE}
+# Residual ACF/CCF plots
+acf(res_comb)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_nuc)
+```
+
+\begin{center}
+\textbf{Graph A25: Residuals CCF for 2-variable VAR model in Nuclear}
+\end{center}
+```{r,echo=FALSE}
+acf(res_nuc)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_hyd)
+```
+
+\begin{center}
+\textbf{Graph A26: Residuals CCF for 2-variable VAR model in Hydro}
+\end{center}
+```{r,echo=FALSE}
+acf(res_hyd)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_comb[,"Can"]); qqline(res_comb[,"Can"])
+qqnorm(res_comb[,"USA"]); qqline(res_comb[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A27: Q-Q plot for 2-variable VAR model in Combfuel}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_comb[,"Can"]); qqline(res_comb[,"Can"])
+qqnorm(res_comb[,"USA"]); qqline(res_comb[,"USA"])
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_nuc[,"Can"]); qqline(res_nuc[,"Can"])
+qqnorm(res_nuc[,"USA"]); qqline(res_nuc[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A28: Q-Q plot for 2-variable VAR model in Nuclear}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_nuc[,"Can"]); qqline(res_nuc[,"Can"])
+qqnorm(res_nuc[,"USA"]); qqline(res_nuc[,"USA"])
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_hyd[,"Can"]); qqline(res_hyd[,"Can"])
+qqnorm(res_hyd[,"USA"]); qqline(res_hyd[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A29: Q-Q plot for 2-variable VAR model in Hydro}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_hyd[,"Can"]); qqline(res_hyd[,"Can"])
+qqnorm(res_hyd[,"USA"]); qqline(res_hyd[,"USA"])
+```
+
+### 4.1.7 Seasonal Differenced VAR Diagnostics
+#### Within-country VAR
+
+```{r,eval=FALSE}
+# get residuals 
+res_can = resid(fit_var_can_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_usa = resid(fit_var_usa_sd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_can, main = "3-variable VAR model residuals plots in Canada")
+plot(res_usa, main = "3-variable VAR model residuals plots in United States")
+```
+
+\begin{center}
+\textbf{Graph A30: Seasonal Differenced Residuals CCF of 3-variable VAR}
+\end{center}
+```{r,echo=FALSE,out.width="55%"}
+# get residuals 
+res_can_sd = resid(fit_var_can_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_usa_sd = resid(fit_var_usa_sd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_can_sd, main = "3-variable VAR model residuals plots in Canada")
+plot(res_usa_sd, main = "3-variable VAR model residuals plots in United States")
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# Residual ACF/CCF plots
+acf(res_can_sd)
+```
+
+\begin{center}
+\textbf{Graph A31: Seasonal Differenced Residuals CCF of 3-variable VAR in Canada}
+\end{center}
+```{r,echo=FALSE}
+# Residual ACF/CCF plots
+acf(res_can_sd)
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_usa_sd)
+```
+
+\begin{center}
+\textbf{Graph A32: Seasonal Differenced Residuals CCF of 3-variable VAR in United States}
+\end{center}
+```{r,echo=FALSE}
+acf(res_usa_sd)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# CAN Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_can_sd[,"Comb"]); qqline(res_can_sd[,"Comb"])
+qqnorm(res_can_sd[,"Nuc"]); qqline(res_can_sd[,"Nuc"])
+qqnorm(res_can_sd[,"Hyd"]); qqline(res_can_sd[,"Hyd"])
+
+```
+
+\begin{center}
+\textbf{Graph A33: Seasonal Differenced Q-Q plot for 3-variable VAR model in Canada}
+\end{center}
+```{r,echo=FALSE}
+# CAN Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_can_sd[,"Comb"]); qqline(res_can_sd[,"Comb"])
+qqnorm(res_can_sd[,"Nuc"]); qqline(res_can_sd[,"Nuc"])
+qqnorm(res_can_sd[,"Hyd"]); qqline(res_can_sd[,"Hyd"])
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# USA Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_usa_sd[,"Comb"]); qqline(res_usa_sd[,"Comb"])
+qqnorm(res_usa_sd[,"Nuc"]); qqline(res_usa_sd[,"Nuc"])
+qqnorm(res_usa_sd[,"Hyd"]); qqline(res_usa_sd[,"Hyd"])
+```
+
+\begin{center}
+\textbf{Graph A34: Seasonal Differenced Q-Q plot for 3-variable VAR model in United States}
+\end{center}
+```{r,echo=FALSE}
+# USA Normal QQ-plots
+par(mfrow = c(2,2))
+qqnorm(res_usa_sd[,"Comb"]); qqline(res_usa_sd[,"Comb"])
+qqnorm(res_usa_sd[,"Nuc"]); qqline(res_usa_sd[,"Nuc"])
+qqnorm(res_usa_sd[,"Hyd"]); qqline(res_usa_sd[,"Hyd"])
+```
+
+\pagebreak
+
+#### Cross-country VAR
+```{r,eval=FALSE}
+# get residuals 
+res_comb_sd = resid(fit_var_comb_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_nuc_sd = resid(fit_var_nuc_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_hyd_sd = resid(fit_var_hyd_sd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_comb_sd, main = "2-variable VAR model residuals plots in Combfuel")
+plot(res_nuc_sd, main = "2-variable VAR model residuals plots in Nuclear")
+plot(res_hyd_sd, main = "2-variable VAR model residuals plots in Hydro")
+```
+
+\begin{center}
+\textbf{Graph A35: Seasonal Differenced 2-variable VAR model residuals plots}
+\end{center}
+```{r,echo=FALSE,out.width="55%"}
+# get residuals 
+res_comb_sd = resid(fit_var_comb_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_nuc_sd = resid(fit_var_nuc_sd) %>% ts( start = c(2010, 1), freq = 12)
+res_hyd_sd = resid(fit_var_hyd_sd) %>% ts( start = c(2010, 1), freq = 12)
+# Residual plot
+plot(res_comb_sd, main = "2-variable VAR model residuals plots in Combfuel")
+plot(res_nuc_sd, main = "2-variable VAR model residuals plots in Nuclear")
+plot(res_hyd_sd, main = "2-variable VAR model residuals plots in Hydro")
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+# Residual ACF/CCF plots
+acf(res_comb_sd)
+```
+
+\begin{center}
+\textbf{Graph A36: Seasonal Differenced Residuals CCF for 2-variable VAR model in Combfuel}
+\end{center}
+```{r,echo=FALSE}
+# Residual ACF/CCF plots
+acf(res_comb_sd)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_nuc_sd)
+```
+
+\begin{center}
+\textbf{Graph A37: Seasonal Differenced Residuals CCF for 2-variable VAR model in Nuclear}
+\end{center}
+```{r,echo=FALSE}
+acf(res_nuc_sd)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+acf(res_hyd_sd)
+```
+
+\begin{center}
+\textbf{Graph A38: Seasonal Differenced Residuals CCF for 2-variable VAR model in Hydro}
+\end{center}
+```{r,echo=FALSE}
+acf(res_hyd_sd)
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_comb_sd[,"Can"]); qqline(res_comb_sd[,"Can"])
+qqnorm(res_comb_sd[,"USA"]); qqline(res_comb_sd[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A39: Seasonal Differenced Q-Q plot for 2-variable VAR model in Combfuel}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_comb_sd[,"Can"]); qqline(res_comb_sd[,"Can"])
+qqnorm(res_comb_sd[,"USA"]); qqline(res_comb_sd[,"USA"])
+
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_nuc_sd[,"Can"]); qqline(res_nuc_sd[,"Can"])
+qqnorm(res_nuc_sd[,"USA"]); qqline(res_nuc_sd[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A40: Seasonal Differenced Q-Q plot for 2-variable VAR model in Nuclear}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_nuc_sd[,"Can"]); qqline(res_nuc_sd[,"Can"])
+qqnorm(res_nuc_sd[,"USA"]); qqline(res_nuc_sd[,"USA"])
+```
+
+\pagebreak
+
+```{r,eval=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_hyd_sd[,"Can"]); qqline(res_hyd_sd[,"Can"])
+qqnorm(res_hyd_sd[,"USA"]); qqline(res_hyd_sd[,"USA"])
+```
+
+\begin{center}
+\textbf{Graph A41: Seasonal Differenced Q-Q plot for 2-variable VAR model in Hydro}
+\end{center}
+```{r,echo=FALSE}
+par(mfrow = c(1,2))
+qqnorm(res_hyd_sd[,"Can"]); qqline(res_hyd_sd[,"Can"])
+qqnorm(res_hyd_sd[,"USA"]); qqline(res_hyd_sd[,"USA"])
+```
+
+
+# 5. Model Evaluation
+## Validation approach(forecast accuracy)
+## 5.1 Graph validation forecast
+### SARIMA model validation forecast
+```{r,eval=FALSE}
+forecast( fit_cc, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Comb")
+lines( tail( ts_can_comb, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_cn, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Nuc")
+lines( tail( ts_can_nuc, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c(main = "actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_ch, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Hyd")
+lines( tail( ts_can_hyd, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_uc, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Comb")
+lines( tail( ts_usa_comb, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_un, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Nuc")
+lines( tail( ts_usa_nuc, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_uh, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Hyd")
+lines( tail( ts_usa_hyd, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+```
+
+\begin{center}
+\textbf{Graph A42: SARIMA Validation Forecast}
+\end{center}
+```{r,echo=FALSE}
+forecast( fit_cc, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Comb")
+lines( tail( ts_can_comb, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_cn, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Nuc")
+lines( tail( ts_can_nuc, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c(main = "actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_ch, 12 ) %>% plot(main = "Canada SARIMA Validation Forecast for Hyd")
+lines( tail( ts_can_hyd, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_uc, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Comb")
+lines( tail( ts_usa_comb, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_un, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Nuc")
+lines( tail( ts_usa_nuc, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+forecast( fit_uh, 12 ) %>% plot(main = "Unite State SARIMA Validation Forecast for Hyd")
+lines( tail( ts_usa_hyd, 12 ), lwd=2, col =2)
+legend( "topleft", legend = c("actual", "forecast"), col = c(2,4), lwd = 2)
+```
+
+### VAR model validation forecast`
+```{r,eval=FALSE}
+fc <- forecast(fit_var_can, 12)
+fc1 <- forecast(fit_var_usa, 12)
+series_names <- colnames(Y_can)
+series_names1 <- colnames(Y_usa)
+for(i in 1:3){
+  plot(fc$forecast[[i]], main = paste("Canada VAR Validation Forecast for", series_names[i]))
+  lines(tail(Y_can[, i], 12), col = "red", lwd = 2)
+  legend("topleft", legend = c("actual", "forecast"),
+         col = c("red", "blue"), lwd = 2)
+}
+
+for(i in 1:3){
+  plot(fc1$forecast[[i]], main = paste("Unite State VAR Validation Forecast for", series_names1[i]))
+  lines(tail(Y_usa[, i], 12), col = "red", lwd = 2)
+  legend("topleft", legend = c("actual", "forecast"),
+         col = c("red", "blue"), lwd = 2)
+}
+
+```
+
+\pagebreak
+
+\begin{center}
+\textbf{Graph A43: VAR Validation Forecast}
+\end{center}
+```{r,echo=FALSE}
+fc <- forecast(fit_var_can, 12)
+fc1 <- forecast(fit_var_usa, 12)
+series_names <- colnames(Y_can)
+series_names1 <- colnames(Y_usa)
+for(i in 1:3){
+  plot(fc$forecast[[i]], main = paste("Canada VAR Validation Forecast for", series_names[i]))
+  lines(tail(Y_can[, i], 12), col = "red", lwd = 2)
+  legend("topleft", legend = c("actual", "forecast"),
+         col = c("red", "blue"), lwd = 2)
+}
+
+for(i in 1:3){
+  plot(fc1$forecast[[i]], main = paste("Unite State VAR Validation Forecast for", series_names1[i]))
+  lines(tail(Y_usa[, i], 12), col = "red", lwd = 2)
+  legend("topleft", legend = c("actual", "forecast"),
+         col = c("red", "blue"), lwd = 2)
+}
+
+```
+
+
+
+## 5.2 Key performance metrics(RMSE, MAE)
+
+### SARIMA model RMSE & MAE
+```{r,eval=FALSE}
+calc_accuracy <- function(ts_data, fit_obj, h = 12) {
+  valid <- tail(ts_data, h)            # validation 
+  fc <- forecast(fit_obj, h = h)       
+  pred <- fc$mean                      
+  
+  errors <- valid - pred
+  RMSE <- sqrt(mean(errors^2, na.rm = TRUE))
+  MAE  <- mean(abs(errors), na.rm = TRUE)
+  
+  return(c(RMSE = RMSE, MAE = MAE))
+}
+
+
+
+fit_list <- list(
+  "Can COMB" = fit_cc,
+  "USA COMB" = fit_uc,
+  "Can NUC"  = fit_cn,
+  "USA NUC"  = fit_un,
+  "Can HYD"  = fit_ch,
+  "USA HYD"  = fit_uh
+)
+
+results <- map2_df(ts_list, fit_list, calc_accuracy, .id = "Series")
+
+kable(results)
+```
+
+\begin{center}
+\textbf{Table A3: Each time series SARIMA RMSE and MAE}
+\end{center}
+```{r,echo=FALSE}
+calc_accuracy <- function(ts_data, fit_obj, h = 12) {
+  valid <- tail(ts_data, h)            # validation 
+  fc <- forecast(fit_obj, h = h)       
+  pred <- fc$mean                      
+  
+  errors <- valid - pred
+  RMSE <- sqrt(mean(errors^2, na.rm = TRUE))
+  MAE  <- mean(abs(errors), na.rm = TRUE)
+  
+  return(c(RMSE = RMSE, MAE = MAE))
+}
+
+
+
+fit_list <- list(
+  "Can COMB" = fit_cc,
+  "USA COMB" = fit_uc,
+  "Can NUC"  = fit_cn,
+  "USA NUC"  = fit_un,
+  "Can HYD"  = fit_ch,
+  "USA HYD"  = fit_uh
+)
+
+results <- map2_df(ts_list, fit_list, calc_accuracy, .id = "Series")
+
+kable(results)
+```
+
+Although USA COMB and USA HYD show relatively large RMSE values in absolute scale, 
+this is mainly due to their substantially higher data magnitudes. Their forecast trajectories 
+closely follow the true observations, and relative accuracy metrics (MAPE) remain acceptable. 
+Therefore, no further model refinement is required, avoiding unnecessary risk of overfitting.
+
+### VAR model RMSE & MAE
+```{r,eval=FALSE}
+calc_accuracy_var <- function(ts_data, fit_var, var_index, h = 12) {
+  
+  valid <- tail(ts_data, h)        
+  fc    <- forecast(fit_var, h = h)
+  pred  <- fc$forecast[[var_index]]$mean   
+  
+  errors <- valid - pred
+  RMSE   <- sqrt(mean(errors^2, na.rm = TRUE))
+  MAE    <- mean(abs(errors), na.rm = TRUE)
+  
+  c(RMSE = RMSE, MAE = MAE)
+}
+
+fit_var_list <- list(
+  fit_var_can,
+  fit_var_usa,
+  fit_var_can,
+  fit_var_usa,
+  fit_var_can,
+  fit_var_usa
+)
+
+var_index <- c(1, 1, 2, 2, 3, 3)
+series_names <- names(ts_list)
+
+results_var <- pmap_dfr(
+  list(ts_data   = ts_list,
+       fit_var   = fit_var_list,
+       var_index = var_index,
+       Series    = series_names),
+  ~{
+    acc <- calc_accuracy_var(..1, ..2, ..3, h = 12)
+    tibble(Series = ..4,
+           RMSE   = acc["RMSE"],
+           MAE    = acc["MAE"])
+  }
+)
+
+kable(results_var)
+
+```
+
+\begin{center}
+\textbf{Table A4: Each time series VAR RMSE and MAE}
+\end{center}
+```{r,echo=FALSE}
+calc_accuracy_var <- function(ts_data, fit_var, var_index, h = 12) {
+  
+  valid <- tail(ts_data, h)        
+  fc    <- forecast(fit_var, h = h)
+  pred  <- fc$forecast[[var_index]]$mean   
+  
+  errors <- valid - pred
+  RMSE   <- sqrt(mean(errors^2, na.rm = TRUE))
+  MAE    <- mean(abs(errors), na.rm = TRUE)
+  
+  c(RMSE = RMSE, MAE = MAE)
+}
+
+fit_var_list <- list(
+  fit_var_can,
+  fit_var_usa,
+  fit_var_can,
+  fit_var_usa,
+  fit_var_can,
+  fit_var_usa
+)
+
+var_index <- c(1, 1, 2, 2, 3, 3)
+series_names <- names(ts_list)
+
+results_var <- pmap_dfr(
+  list(ts_data   = ts_list,
+       fit_var   = fit_var_list,
+       var_index = var_index,
+       Series    = series_names),
+  ~{
+    acc <- calc_accuracy_var(..1, ..2, ..3, h = 12)
+    tibble(Series = ..4,
+           RMSE   = acc["RMSE"],
+           MAE    = acc["MAE"])
+  }
+)
+
+kable(results_var)
+
+```
+
+
+# 6. Final model for Forecasting 
+Final Training (Refit best model) use all data(training + validation)
+```{r,eval=FALSE}
+final_cc = Arima(ts_can_comb,order = c(1,0,1), seasonal = list(order = c(1,1,1),
+               period = 12),include.drift = T)
+final_uc = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)$varresult[[1]]
+final_cn = Arima(ts_can_nuc,order = c(0,1,2), seasonal = list(order = c(0,1,1),
+               period = 12),include.drift = T)
+final_un = Arima(ts_usa_nuc,order = c(2,0,1), seasonal = list(order = c(0,1,2),
+               period = 12),include.drift = T)
+final_ch = Arima(ts_can_hyd,order = c(3,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+final_uh = Arima(ts_usa_hyd,order = c(1,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+
+model_list <- list(
+  "CAN COMB" = final_cc,
+  "USA COMB" = final_uc,
+  "CAN NUC"  = final_cn,
+  "USA NUC"  = final_un,
+  "CAN HYD" = final_ch,
+  "USA HYD" = final_uh
+)
+summ_tbl1 <- imap(model_list, function(m, nm){
+  if ("Arima" %in% class(m)) {
+
+    ord <- arimaorder(m)
+    order_chr    <- sprintf("SARIMA(%d,%d,%d)(%d,%d,%d)[%d]", ord[1], ord[2], ord[3],
+                            ord[4], ord[5], ord[6], ord[7])
+    aic_val  <- AIC(m)
+
+    
+
+  
+  } else if ("lm" %in% class(m)) {
+
+    
+    order_chr    <- "VAR(1,seasonal = 12)"
+    aic_val      <- AIC(m)
+    
+
+  } else {
+    stop(sprintf("Unsupported model class for %s: %s",
+                 nm, paste(class(m), collapse = ", ")))
+  }
+
+  tibble(
+    Series = nm,
+    Order = order_chr,
+    AIC = round(aic_val, 2)
+  )
+})
+
+final_table <- bind_rows(summ_tbl1)
+
+kable(
+  final_table
+  )
+```
+
+\begin{center}
+\textbf{Table A5: Final forecasting model summary}
+\end{center}
+```{r,warning=FALSE,echo=FALSE}
+final_cc = Arima(ts_can_comb,order = c(1,0,1), seasonal = list(order = c(1,1,1),
+               period = 12),include.drift = T)
+final_uc = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)$varresult[[1]]
+final_cn = Arima(ts_can_nuc,order = c(0,1,2), seasonal = list(order = c(0,1,1),
+               period = 12),include.drift = T)
+final_un = Arima(ts_usa_nuc,order = c(2,0,1), seasonal = list(order = c(0,1,2),
+               period = 12),include.drift = T)
+final_ch = Arima(ts_can_hyd,order = c(3,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+final_uh = Arima(ts_usa_hyd,order = c(1,0,0), seasonal = list(order = c(2,1,1),
+               period = 12),include.drift = T)
+
+model_list <- list(
+  "CAN COMB" = final_cc,
+  "USA COMB" = final_uc,
+  "CAN NUC"  = final_cn,
+  "USA NUC"  = final_un,
+  "CAN HYD" = final_ch,
+  "USA HYD" = final_uh
+)
+summ_tbl1 <- imap(model_list, function(m, nm){
+  if ("Arima" %in% class(m)) {
+
+    ord <- arimaorder(m)
+    order_chr    <- sprintf("SARIMA(%d,%d,%d)(%d,%d,%d)[%d]", ord[1], ord[2], ord[3],
+                            ord[4], ord[5], ord[6], ord[7])
+    aic_val  <- AIC(m)
+
+    
+
+  
+  } else if ("lm" %in% class(m)) {
+
+    
+    order_chr    <- "VAR(1,seasonal = 12)"
+    aic_val      <- AIC(m)
+    
+
+  } else {
+    stop(sprintf("Unsupported model class for %s: %s",
+                 nm, paste(class(m), collapse = ", ")))
+  }
+
+  tibble(
+    Series = nm,
+    Order = order_chr,
+    AIC = round(aic_val, 2)
+  )
+})
+
+final_table <- bind_rows(summ_tbl1)
+
+kable(
+  final_table
+  )
+```
+Note: the VAR model has different AIC criteria with SARIMA model since they have 
+different constant (k).
+
+## Coefficients for Final forecasting model
+```{r,eval=FALSE}
+collapse_coef <- function(fit){
+  cf <- coef(fit)
+  paste0(names(cf), " = ", round(cf, 3), collapse = ", ")
+}
+
+
+coef_cc <- collapse_coef(final_cc)
+coef_uc <- collapse_coef(final_uc)
+coef_cn <- collapse_coef(final_cn)
+coef_un <- collapse_coef(final_un)
+coef_ch <- collapse_coef(final_ch)
+coef_uh <- collapse_coef(final_uh)
+
+# Build final table
+coef_table <- data.frame(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_cc,
+    coef_uc,
+    coef_cn,
+    coef_un,
+    coef_ch,
+    coef_uh
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(coef_table,escape = FALSE)
+```
+
+\begin{center}
+\textbf{Table A6: Final forecasting model coefficients summary}
+\end{center}
+```{r,echo=FALSE}
+collapse_coef <- function(fit){
+  cf <- coef(fit)
+  parts <- paste0(names(cf), " = ", round(cf, 3))
+  paste(parts, collapse=", ")
+}
+
+
+coef_cc <- collapse_coef(final_cc)
+coef_uc <- collapse_coef(final_uc)
+coef_cn <- collapse_coef(final_cn)
+coef_un <- collapse_coef(final_un)
+coef_ch <- collapse_coef(final_ch)
+coef_uh <- collapse_coef(final_uh)
+
+# Build final table
+coef_table <- data.frame(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_cc,
+    coef_uc,
+    coef_cn,
+    coef_un,
+    coef_ch,
+    coef_uh
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(coef_table,escape = FALSE)
+```
+
+
+# 6.1 Forecastion Findings(Q2)
+```{r,eval=FALSE}
+final_fc = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)
+fc_uc = forecast(final_fc, 24)
+forecast( final_cc, 24 ) %>% plot(main = "Canada SARIMA Forecast for Combfuel")
+plot(fc_uc$forecast[[1]], main = paste("Unite State VAR Forecast for Combfuel", series_names1[1]))
+forecast( final_cn, 24 ) %>% plot(main = "Canada SARIMA Forecast for Nuclear")
+forecast( final_un, 24 ) %>% plot(main = "Unite State SARIMA Forecast For Nuclear")
+forecast( final_ch, 24 ) %>% plot(main = "Canada SARIMA Forecast for Hydro")
+forecast( final_uh, 24 ) %>% plot(main = "Unite State SARIMA Forecast for Hydro")
+```
+
+\begin{center}
+\textbf{Graph A44: Each Series 2-years Forecat Plots}
+\end{center}
+```{r,echo=FALSE}
+final_fc = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)
+fc_uc = forecast(final_fc, 24)
+forecast( final_cc, 24 ) %>% plot(main = "Canada SARIMA Forecast for Combfuel")
+plot(fc_uc$forecast[[1]], main = paste("Unite State VAR Forecast for Combfuel", series_names1[1]))
+forecast( final_cn, 24 ) %>% plot(main = "Canada SARIMA Forecast for Nuclear")
+forecast( final_un, 24 ) %>% plot(main = "Unite State SARIMA Forecast For Nuclear")
+forecast( final_ch, 24 ) %>% plot(main = "Canada SARIMA Forecast for Hydro")
+forecast( final_uh, 24 ) %>% plot(main = "Unite State SARIMA Forecast for Hydro")
+```
+
+
+
+# 7. Final model for Interdependence Analysis
+```{r}
+VARselect(Y_can, lag.max = 5, type = "both",season = 12)$selection
+VARselect(Y_usa, lag.max = 5, type = "both",season = 12)$selection
+```
+
+```{r,eval=FALSE}
+fit_var_can = VAR(Y_can, type = "both", ic = "AIC", p = 1,season = 12)
+
+fit_var_usa = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)
+
+aic_can <- round(AIC(fit_var_can), 2)
+aic_usa <- round(AIC(fit_var_usa), 2)
+
+var_summary <- tibble(
+  Country = c("Canada", "USA"),
+  Model = c("VAR(1)", "VAR(1)"),
+  Seasonal = c("Seasonal = 12", "Seasonal = 12"),
+  Parameters = c(
+    "const, drift, Comb.l1, Nuc.l1, Hyd.l1",
+    "const, drift, Comb.l1, Nuc.l1, Hyd.l1"
+  ),
+  AIC = c(aic_can, aic_usa)
+)
+
+kable(var_summary
+) 
+
+
+```
+
+\begin{center}
+\textbf{Table A7: Selected 3-variable VAR models for Canada and USA}
+\end{center}
+```{r,echo=FALSE}
+
+fit_var_can = VAR(Y_can, type = "both", ic = "AIC", p = 1,season = 12)
+
+fit_var_usa = VAR(Y_usa, type = "both", ic = "AIC", p = 1, season = 12)
+
+aic_can <- round(AIC(fit_var_can), 2)
+aic_usa <- round(AIC(fit_var_usa), 2)
+
+var_summary <- tibble(
+  Country = c("Canada", "USA"),
+  Model = c("VAR(1)", "VAR(1)"),
+  Seasonal = c("Seasonal = 12", "Seasonal = 12"),
+  Parameters = c(
+    "const, drift, Comb.l1, Nuc.l1, Hyd.l1",
+    "const, drift, Comb.l1, Nuc.l1, Hyd.l1"
+  ),
+  AIC = c(aic_can, aic_usa)
+)
+
+kable(var_summary
+) 
+
+
+
+```
+
+## coefficients in these model
+
+```{r,eval=FALSE}
+collapse_var_eq <- function(fit, eq){
+  cf_mat <- coef(fit)[[eq]]          
+  est    <- cf_mat[, 1]              
+
+  parts <- paste0(rownames(cf_mat), " = ", round(est, 2))
+  paste(parts, collapse = ", ")
+}
+coef_can_comb <- collapse_var_eq(fit_var_can, "Comb")
+coef_usa_comb <- collapse_var_eq(fit_var_usa, "Comb")
+
+coef_can_nuc  <- collapse_var_eq(fit_var_can, "Nuc")
+coef_usa_nuc  <- collapse_var_eq(fit_var_usa, "Nuc")
+
+coef_can_hyd  <- collapse_var_eq(fit_var_can, "Hyd")
+coef_usa_hyd  <- collapse_var_eq(fit_var_usa, "Hyd")
+
+coef_table_var <- tibble(
+  Series = c(
+    "Can Comb",
+    "USA Comb",
+    "Can Nuclear",
+    "USA Nuclear",
+    "Can Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb,
+    coef_usa_comb,
+    coef_can_nuc,
+    coef_usa_nuc,
+    coef_can_hyd,
+    coef_usa_hyd
+  )
+)
+
+kable(coef_table_var, escape = FALSE)
+```
+
+
+\begin{center}
+\textbf{Table A8: Selected 3-variable VAR models coefficients for Canada and USA}
+\end{center}
+```{r,echo=FALSE}
+collapse_var_eq <- function(fit, eq){
+  cf_mat <- coef(fit)[[eq]]          
+  est    <- cf_mat[, 1]              
+
+  parts <- paste0(rownames(cf_mat), " = ", round(est, 2))
+  paste(parts, collapse = ", ")
+}
+coef_can_comb <- collapse_var_eq(fit_var_can, "Comb")
+coef_usa_comb <- collapse_var_eq(fit_var_usa, "Comb")
+
+coef_can_nuc  <- collapse_var_eq(fit_var_can, "Nuc")
+coef_usa_nuc  <- collapse_var_eq(fit_var_usa, "Nuc")
+
+coef_can_hyd  <- collapse_var_eq(fit_var_can, "Hyd")
+coef_usa_hyd  <- collapse_var_eq(fit_var_usa, "Hyd")
+
+coef_table_var <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb,
+    coef_usa_comb,
+    coef_can_nuc,
+    coef_usa_nuc,
+    coef_can_hyd,
+    coef_usa_hyd
+  )
+)
+
+kable(coef_table_var, escape = FALSE)
+```
+
+
+```{r,eval=FALSE}
+fit_var_comb = VAR(Y_comb, type = "both", ic = "AIC", p = 2, season = 12)
+fit_var_nuc = VAR(Y_nuc, type = "both", ic = "AIC", p = 2,season = 12)
+fit_var_hyd = VAR(Y_hyd, type = "both", ic = "AIC", p = 4, season = 12)
+
+var_summary_cc <- tibble(
+  Energy = c("Combfuel", "Nuclear", "Hydro"),
+  Model = c("VAR(2)", "VAR(2)", "VAR(4)"),
+  Seasonal = c("Seasonal = 12", "Seasonal = 12", "Seasonal = 12"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-4 of all variables + Const + Trend"
+  ),
+  AIC = c(
+    AIC(fit_var_comb) %>% round(2),
+    AIC(fit_var_nuc) %>% round(2),
+    AIC(fit_var_hyd) %>% round(2)
+  )
+)
+
+kable(var_summary_cc
+) 
+```
+
+\begin{center}
+\textbf{Table A9: Selected 2-variable VAR models for Combfuel, Nuclear, Hydro}
+\end{center}
+```{r,echo=FALSE}
+fit_var_comb = VAR(Y_comb, type = "both", ic = "AIC", p = 2, season = 12)
+fit_var_nuc = VAR(Y_nuc, type = "both", ic = "AIC", p = 2,season = 12)
+fit_var_hyd = VAR(Y_hyd, type = "both", ic = "AIC", p = 4, season = 12)
+
+var_summary_cc <- tibble(
+  Energy = c("Combfuel", "Nuclear", "Hydro"),
+  Model = c("VAR(2)", "VAR(2)", "VAR(4)"),
+  Seasonal = c("Seasonal = 12", "Seasonal = 12", "Seasonal = 12"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-4 of all variables + Const + Trend"
+  ),
+  AIC = c(
+    AIC(fit_var_comb) %>% round(2),
+    AIC(fit_var_nuc) %>% round(2),
+    AIC(fit_var_hyd) %>% round(2)
+  )
+)
+
+kable(var_summary_cc
+) 
+
+```
+
+## coefficients in these model
+
+```{r,eval=FALSE}
+coef_can_comb <- collapse_var_eq(fit_var_comb, "Can")
+coef_usa_comb <- collapse_var_eq(fit_var_comb, "USA")
+
+coef_can_nuc  <- collapse_var_eq(fit_var_nuc, "Can")
+coef_usa_nuc  <- collapse_var_eq(fit_var_nuc, "USA")
+
+coef_can_hyd  <- collapse_var_eq(fit_var_hyd, "Can")
+coef_usa_hyd  <- collapse_var_eq(fit_var_hyd, "USA")
+
+coef_table_var <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb,
+    coef_usa_comb,
+    coef_can_nuc,
+    coef_usa_nuc,
+    coef_can_hyd,
+    coef_usa_hyd
+  )
+)
+
+kable(coef_table_var, escape = FALSE)
+```
+\begin{center}
+\textbf{Table A9: Selected 2-variable VAR models coefficients for Combfuel, Nuclear, Hydro}
+\end{center}
+```{r,echo=FALSE}
+coef_can_comb <- collapse_var_eq(fit_var_comb, "Can")
+coef_usa_comb <- collapse_var_eq(fit_var_comb, "USA")
+
+coef_can_nuc  <- collapse_var_eq(fit_var_nuc, "Can")
+coef_usa_nuc  <- collapse_var_eq(fit_var_nuc, "USA")
+
+coef_can_hyd  <- collapse_var_eq(fit_var_hyd, "Can")
+coef_usa_hyd  <- collapse_var_eq(fit_var_hyd, "USA")
+
+coef_table_var <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb,
+    coef_usa_comb,
+    coef_can_nuc,
+    coef_usa_nuc,
+    coef_can_hyd,
+    coef_usa_hyd
+  )
+)
+
+kable(coef_table_var, escape = FALSE)
+```
+
+## Seasonal Differenced VAR model
+```{r,eval=FALSE}
+aic_can_sd <- round(AIC(fit_var_can_sd), 2)
+aic_usa_sd <- round(AIC(fit_var_usa_sd), 2)
+
+var_summary_sd <- tibble(
+  Country = c("Canada", "USA"),
+  Model = c("VAR(3)", "VAR(2)"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-3 of all variables + Const + Trend"
+  ),
+  AIC = c(aic_can_sd, aic_usa_sd)
+)
+
+kable(var_summary_sd) 
+```
+
+\begin{center}
+\textbf{Table A10: Selected Seasonal Differenced 3-variable VAR models for Canada and USA}
+\end{center}
+```{r,echo=FALSE}
+aic_can_sd <- round(AIC(fit_var_can_sd), 2)
+aic_usa_sd <- round(AIC(fit_var_usa_sd), 2)
+
+var_summary_sd <- tibble(
+  Country = c("Canada", "USA"),
+  Model = c("VAR(3)", "VAR(2)"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-3 of all variables + Const + Trend"
+  ),
+  AIC = c(aic_can_sd, aic_usa_sd)
+)
+
+kable(var_summary_sd) 
+```
+
+```{r,eval=FALSE}
+aic_c_sd=round(AIC(fit_var_comb_sd),2)
+aic_n_sd=round(AIC(fit_var_nuc_sd),2)
+aic_h_sd=round(AIC(fit_var_nuc_sd),2)
+
+var_summary_cc_sd <- tibble(
+  Energy = c("Combfuel", "Nuclear", "Hydro"),
+  Model = c("VAR(2)", "VAR(2)", "VAR(4)"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-4 of all variables + Const + Trend"
+  ),
+  AIC = c(aic_c_sd,aic_n_sd,aic_h_sd
+  )
+)
+
+kable(var_summary_cc_sd) 
+```
+
+\begin{center}
+\textbf{Table A11: Selected Seasonal Differenced 2-variable VAR models for Combfuel, Nuclear, Hydro}
+\end{center}
+```{r,echo=FALSE}
+
+aic_c_sd=round(AIC(fit_var_comb_sd),2)
+aic_n_sd=round(AIC(fit_var_nuc_sd),2)
+aic_h_sd=round(AIC(fit_var_nuc_sd),2)
+
+var_summary_cc_sd <- tibble(
+  Energy = c("Combfuel", "Nuclear", "Hydro"),
+  Model = c("VAR(2)", "VAR(2)", "VAR(1)"),
+  Parameters = c(
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1-2 of all variables + Const + Trend",
+    "Lag1 of all variables + Const + Trend"
+  ),
+  AIC = c(aic_c_sd,aic_n_sd,aic_h_sd
+  )
+)
+
+kable(var_summary_cc_sd) 
+```
+
+### coefficients
+```{r,eval=FALSE}
+coef_can_comb_sd <- collapse_var_eq(fit_var_can_sd, "Comb")
+coef_usa_comb_sd <- collapse_var_eq(fit_var_usa_sd, "Comb")
+
+coef_can_nuc_sd  <- collapse_var_eq(fit_var_can_sd, "Nuc")
+coef_usa_nuc_sd  <- collapse_var_eq(fit_var_usa_sd, "Nuc")
+
+coef_can_hyd_sd  <- collapse_var_eq(fit_var_can_sd, "Hyd")
+coef_usa_hyd_sd  <- collapse_var_eq(fit_var_usa_sd, "Hyd")
+
+coef_table_var_sd <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb_sd,
+    coef_usa_comb_sd,
+    coef_can_nuc_sd,
+    coef_usa_nuc_sd,
+    coef_can_hyd_sd,
+    coef_usa_hyd_sd
+  )
+)
+
+kable(coef_table_var_sd, escape = FALSE)
+```
+
+\pagebreak
+
+\begin{center}
+\textbf{Table A12: Seasonal Differenced 3-variable VAR models coefficients for Canada and USA}
+\end{center}
+```{r,echo=FALSE}
+coef_can_comb_sd <- collapse_var_eq(fit_var_can_sd, "Comb")
+coef_usa_comb_sd <- collapse_var_eq(fit_var_usa_sd, "Comb")
+
+coef_can_nuc_sd  <- collapse_var_eq(fit_var_can_sd, "Nuc")
+coef_usa_nuc_sd  <- collapse_var_eq(fit_var_usa_sd, "Nuc")
+
+coef_can_hyd_sd  <- collapse_var_eq(fit_var_can_sd, "Hyd")
+coef_usa_hyd_sd  <- collapse_var_eq(fit_var_usa_sd, "Hyd")
+
+coef_table_var_sd <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb_sd,
+    coef_usa_comb_sd,
+    coef_can_nuc_sd,
+    coef_usa_nuc_sd,
+    coef_can_hyd_sd,
+    coef_usa_hyd_sd
+  )
+)
+
+kable(coef_table_var_sd, escape = FALSE)
+```
+
+```{r,eval=FALSE}
+coef_can_comb_sd <- collapse_var_eq(fit_var_comb_sd, "Can")
+coef_usa_comb_sd <- collapse_var_eq(fit_var_comb_sd, "USA")
+
+coef_can_nuc_sd  <- collapse_var_eq(fit_var_nuc_sd, "Can")
+coef_usa_nuc_sd  <- collapse_var_eq(fit_var_nuc_sd, "USA")
+
+coef_can_hyd_sd  <- collapse_var_eq(fit_var_hyd_sd, "Can")
+coef_usa_hyd_sd  <- collapse_var_eq(fit_var_hyd_sd, "USA")
+
+coef_table_var_sd <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb_sd,
+    coef_usa_comb_sd,
+    coef_can_nuc_sd,
+    coef_usa_nuc_sd,
+    coef_can_hyd_sd,
+    coef_usa_hyd_sd
+  )
+)
+
+kable(coef_table_var_sd, escape = FALSE)
+```
+
+
+\begin{center}
+\textbf{Table A13:Seasonal Differenced 2-variable VAR models cofficients for Combfuel, Nuclear, Hydro}
+\end{center}
+```{r,echo=FALSE}
+coef_can_comb_sd <- collapse_var_eq(fit_var_comb_sd, "Can")
+coef_usa_comb_sd <- collapse_var_eq(fit_var_comb_sd, "USA")
+
+coef_can_nuc_sd  <- collapse_var_eq(fit_var_nuc_sd, "Can")
+coef_usa_nuc_sd  <- collapse_var_eq(fit_var_nuc_sd, "USA")
+
+coef_can_hyd_sd  <- collapse_var_eq(fit_var_hyd_sd, "Can")
+coef_usa_hyd_sd  <- collapse_var_eq(fit_var_hyd_sd, "USA")
+
+coef_table_var_sd <- tibble(
+  Series = c(
+    "Canada Comb",
+    "USA Comb",
+    "Canada Nuclear",
+    "USA Nuclear",
+    "Canada Hydro",
+    "USA Hydro"
+  ),
+  Coefficients = c(
+    coef_can_comb_sd,
+    coef_usa_comb_sd,
+    coef_can_nuc_sd,
+    coef_usa_nuc_sd,
+    coef_can_hyd_sd,
+    coef_usa_hyd_sd
+  )
+)
+
+kable(coef_table_var_sd, escape = FALSE)
+```
+
+
+# 7.1 Correlation Findings(Q3)
+## Granger and Instantaneous Causality
+```{r}
+# In Canada
+causality(fit_var_can, cause = "Comb")
+causality(fit_var_can, cause = "Nuc")
+causality(fit_var_can, cause = "Hyd")
+# In United State
+causality(fit_var_usa, cause = "Comb")
+causality(fit_var_usa, cause = "Nuc")
+causality(fit_var_usa, cause = "Hyd")
+
+causality(fit_var_comb, cause = "Can")  # Can -> USA 
+causality(fit_var_comb, cause = "USA")  # USA -> Can 
+
+causality(fit_var_nuc, cause = "Can")  # Can -> USA 
+causality(fit_var_nuc, cause = "USA")  # USA -> Can 
+
+causality(fit_var_hyd, cause = "Can")  # Can -> USA 
+causality(fit_var_hyd, cause = "USA")  # USA -> Can 
+```
+Base on Granger Causality p value at 5% significant level, only in the energy Nuclear,
+Canada has a Granger Cause to Unite State.
+
+## Seasonal Differenced Granger Causality
+```{r}
+# In Canada
+causality(fit_var_can_sd, cause = "Comb")
+causality(fit_var_can_sd, cause = "Nuc")
+causality(fit_var_can_sd, cause = "Hyd")
+# In United State
+causality(fit_var_usa_sd, cause = "Comb")
+causality(fit_var_usa_sd, cause = "Nuc")
+causality(fit_var_usa_sd, cause = "Hyd")
+
+causality(fit_var_comb_sd, cause = "Can")  # Can -> USA 
+causality(fit_var_comb_sd, cause = "USA")  # USA -> Can 
+
+causality(fit_var_nuc_sd, cause = "Can")  # Can -> USA 
+causality(fit_var_nuc_sd, cause = "USA")  # USA -> Can 
+
+causality(fit_var_hyd_sd, cause = "Can")  # Can -> USA 
+causality(fit_var_hyd_sd, cause = "USA")  # USA -> Can 
+```
+
+
+## Impluse Response Function 
+```{r,eval=FALSE}
+irf(fit_var_can, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A45: Impluse Response from Energy Source in Canada}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_can, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_usa, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A46: Impluse Response from Energy Source in United States}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_usa, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_comb, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A47: Impluse Response from Country in Combfuel}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_comb, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_nuc, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A48: Impluse Response from Country in Nuclear}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_nuc, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_hyd, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A49: Impluse Response from Country in Hydro}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_hyd, ortho = F) %>% plot()
+```
+
+## Seasonal Differenced Impluse Response Function
+```{r,eval=FALSE}
+irf(fit_var_can_sd, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A50: Impluse Response from Energy Source in Canada}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_can_sd, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_usa_sd, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A51: Impluse Response from Energy Source in United States}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_usa_sd, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_comb_sd, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A52: Impluse Response from Country in Combfuel}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_comb_sd, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_nuc_sd, ortho = F) %>% plot()
+```
+
+\begin{center}
+\textbf{Graph A53: Impluse Response from Country in Nuclear}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_nuc_sd, ortho = F) %>% plot()
+```
+
+```{r,eval=FALSE}
+irf(fit_var_hyd_sd, ortho = F) %>% plot()
+```
+
+\pagebreak
+
+\begin{center}
+\textbf{Graph A54: Impluse Response from Country in Hydro}
+\end{center}
+```{r,echo=FALSE,out.width="60%"}
+irf(fit_var_hyd_sd, ortho = F) %>% plot()
+```
+
+
